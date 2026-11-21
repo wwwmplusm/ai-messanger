@@ -9,7 +9,7 @@ const assets = new Map(await Promise.all([
   ['/icon.svg', '../assets/icon.svg', 'image/svg+xml'],
 ].map(async ([url, path, type]) => [url, { type, body: await readFile(new URL(path, import.meta.url)) }])));
 
-export function serveSetup({ store, publicUrl, botUsername, port }) {
+export function serveSetup({ store, personal, publicUrl, botUsername, port }) {
   const url = new URL(publicUrl);
   const secure = url.protocol === 'https:';
   const cookie = secure ? '__Host-agent_setup' : 'agent_setup';
@@ -40,11 +40,19 @@ export function serveSetup({ store, publicUrl, botUsername, port }) {
 
       if (req.method === 'GET' && pathname === '/api/setup/status') {
         const auth = await runnerRequest(owner, '/auth');
+        const ownBot = store.personalBot(owner.user_id);
         return json(res, 200, {
           profile: { name: owner.name, instructions: owner.instructions, telegramName: owner.telegram_name },
+          personalBot: {
+            enabled: personal.enabled, username: ownBot?.username ?? null, running: personal.isRunning(owner.user_id),
+          },
           auth,
-          telegram: `https://t.me/${botUsername}`,
+          telegram: `https://t.me/${ownBot?.username ?? botUsername}`,
         });
+      }
+      if (req.method === 'POST' && pathname === '/api/setup/bot') {
+        const { token } = await readJson(req);
+        return json(res, 200, await personal.connect(owner.user_id, typeof token === 'string' ? token.trim() : token));
       }
       if (req.method === 'POST' && pathname === '/api/setup/profile') {
         const body = await readJson(req, 12_000);

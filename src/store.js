@@ -20,6 +20,17 @@ export function openStore(path) {
       kind TEXT NOT NULL,
       expires INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS personal_bots (
+      user_id INTEGER PRIMARY KEY REFERENCES agents(user_id),
+      bot_id INTEGER NOT NULL UNIQUE,
+      username TEXT NOT NULL,
+      credential TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS onboarding_invites (
+      user_id INTEGER PRIMARY KEY,
+      digest TEXT NOT NULL UNIQUE,
+      expires INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS tasks (
       id INTEGER PRIMARY KEY,
       topic INTEGER NOT NULL UNIQUE,
@@ -58,10 +69,24 @@ export function openStore(path) {
   const get = (sql, ...params) => db.prepare(sql).get(...params);
   const all = (sql, ...params) => db.prepare(sql).all(...params);
   const run = (sql, ...params) => db.prepare(sql).run(...params);
+  if (!all('PRAGMA table_info(jobs)').some((column) => column.name === 'status_message')) {
+    db.exec('ALTER TABLE jobs ADD COLUMN status_message INTEGER');
+  }
   const agent = (id) => get('SELECT * FROM agents WHERE user_id = ?', id);
   const agents = () => all('SELECT * FROM agents ORDER BY slot');
+  const freeSlot = () => [1, 2].find((slot) => !get('SELECT 1 FROM agents WHERE slot = ?', slot));
+  function register(userId, name) {
+    if (agent(userId)) {
+      run('UPDATE agents SET telegram_name = ? WHERE user_id = ?', name, userId);
+    } else {
+      const slot = freeSlot();
+      if (!slot) return;
+      run('INSERT INTO agents (slot, user_id, telegram_name) VALUES (?, ?, ?)', slot, userId, name);
+    }
+    return agent(userId);
+  }
   const task = (id) => get('SELECT * FROM tasks WHERE id = ?', id);
-  const job = (id) => get('SELECT id, task_id, owner, kind, note, status, prompt_message, answer, thread_id, result FROM jobs WHERE id = ?', id);
+  const job = (id) => get('SELECT id, task_id, owner, kind, note, status, prompt_message, status_message, answer, thread_id, result FROM jobs WHERE id = ?', id);
 
   return {
     group: () => Number(get("SELECT value FROM settings WHERE key = 'group'")?.value || 0),
@@ -73,16 +98,7 @@ export function openStore(path) {
     },
     agent,
     agents,
-    register(userId, name) {
-      if (agent(userId)) {
-        run('UPDATE agents SET telegram_name = ? WHERE user_id = ?', name, userId);
-      } else {
-        const slot = [1, 2].find((number) => !agents().some((entry) => entry.slot === number));
-        if (!slot) return;
-        run('INSERT INTO agents (slot, user_id, telegram_name) VALUES (?, ?, ?)', slot, userId, name);
-      }
-      return agent(userId);
-    },
+    register,
     saveProfile(id, name, instructions) {
       run('UPDATE agents SET name = ?, instructions = ? WHERE user_id = ?', name, instructions, id);
     },
@@ -91,6 +107,38 @@ export function openStore(path) {
       run("DELETE FROM tokens WHERE expires < ? OR (user_id = ? AND kind = 'invite')", Date.now(), id);
       run("INSERT INTO tokens VALUES (?, ?, 'invite', ?)", hash(code), id, Date.now() + 10 * 60_000);
       return code;
+    },
+    createOnboarding(id) {
+      if (!agent(id) && !freeSlot()) return;
+      const code = token();
+      run('DELETE FROM onboarding_invites WHERE expires < ?', Date.now());
+      run(`INSERT INTO onboarding_invites VALUES (?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET digest = excluded.digest, expires = excluded.expires`,
+      id, hash(code), Date.now() + 24 * 60 * 60_000);
+      return code;
+    },
+    acceptOnboarding(id, name, code) {
+      if (code.length !== 43) return 'invalid';
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const valid = get('SELECT 1 FROM onboarding_invites WHERE user_id = ? AND digest = ? AND expires >= ?',
+          id, hash(code), Date.now());
+        const result = !valid ? 'invalid' : register(id, name) ? 'accepted' : 'full';
+        if (result === 'accepted') run('DELETE FROM onboarding_invites WHERE user_id = ?', id);
+        db.exec('COMMIT');
+        return result;
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+      }
+    },
+    personalBots: () => all('SELECT * FROM personal_bots'),
+    personalBot: (id) => get('SELECT bot_id, username FROM personal_bots WHERE user_id = ?', id),
+    savePersonalBot(id, botId, username, credential) {
+      return run(`INSERT INTO personal_bots SELECT ?, ?, ?, ?
+        WHERE NOT EXISTS (SELECT 1 FROM personal_bots WHERE bot_id = ? AND user_id != ?)
+        ON CONFLICT(user_id) DO UPDATE SET bot_id = excluded.bot_id, username = excluded.username,
+        credential = excluded.credential`, id, botId, username, credential, botId, id).changes === 1;
     },
     exchange(code) {
       if (typeof code !== 'string' || code.length !== 43) return;
@@ -138,6 +186,9 @@ export function openStore(path) {
     recordPrompt(id, message) {
       run('UPDATE jobs SET prompt_message = ? WHERE id = ?', message, id);
     },
+    recordStatus(id, message) {
+      run('UPDATE jobs SET status_message = ? WHERE id = ?', message, id);
+    },
     answer(id, owner, replyTo, answer) {
       return run(`UPDATE jobs SET answer = ?, status = 'queued'
         WHERE id = ? AND owner = ? AND prompt_message = ? AND status = 'question'`, answer, id, owner, replyTo).changes === 1;
@@ -160,7 +211,7 @@ export function openStore(path) {
       return row && job(row.id);
     },
     clearInterrupted() {
-      run("UPDATE jobs SET status = 'failed' WHERE status = 'running'");
+      return all("UPDATE jobs SET status = 'failed' WHERE status = 'running' RETURNING id").map(({ id }) => job(id));
     },
     fail(id) {
       run("UPDATE jobs SET status = 'failed' WHERE id = ? AND status = 'running'", id);

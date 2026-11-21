@@ -4,12 +4,16 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { once } from 'node:events';
+import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 
 const group = { id: -9350001, type: 'group', title: 'Проект' };
 const users = [11, 22, 33].map((id) => ({ id, is_bot: false, first_name: `User ${id}` }));
 const self = { id: 88, is_bot: true, first_name: 'AI Messenger', username: 'fixture_bot' };
+const personalBot = { id: 89, is_bot: true, first_name: 'Personal', username: 'fixture_personal_bot' };
+const personalToken = '89:fixture-personal-token';
 
 async function until(check, description) {
   for (let i = 0; i < 250; i++) {
@@ -32,31 +36,36 @@ async function sparePort() {
   return port;
 }
 
-test('два веб-подключения, общий черновик и отдельное согласие владельца на каждый ход', { timeout: 25_000 }, async (t) => {
+test('приглашение личного бота, два изолированных Codex и согласие владельцев на запуск', { timeout: 25_000 }, async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'ai-messanger-test-'));
   const children = [];
   const diagnostics = [];
   const messages = [];
+  const statusEdits = [];
   const updates = [];
   const callbacks = [];
+  const confirmedUpdates = new Map();
   let nextMessage = 100;
   let nextUpdate = 0;
   function launch(script, env) {
     const child = spawn(process.execPath, [script], { env: { PATH: process.env.PATH, ...env } });
     child.stderr.on('data', (chunk) => diagnostics.push(chunk.toString()));
     children.push(child);
+    return child;
   }
 
   const telegram = createServer(async (req, res) => {
     if (req.url.endsWith('/documents/brief.txt')) return res.end('Текст задания');
     const method = req.url.split('/').at(-1);
+    const sender = req.url.startsWith(`/bot${personalToken}/`) ? personalBot : self;
     const pieces = [];
     for await (const piece of req) pieces.push(piece);
     const content = Buffer.concat(pieces).toString();
     const data = req.headers['content-type']?.includes('application/json') && content ? JSON.parse(content) : {};
     let result = true;
     switch (method) {
-      case 'getMe': result = self; break;
+      case 'getMe': result = sender; break;
+      case 'getWebhookInfo': result = { url: '' }; break;
       case 'getChatMember':
         result = { status: data.user_id === users[0].id ? 'administrator' : 'member' };
         break;
@@ -64,7 +73,7 @@ test('два веб-подключения, общий черновик и от�
       case 'sendMessage':
       case 'sendDocument':
         result = {
-          message_id: ++nextMessage, date: 1, from: self,
+          message_id: ++nextMessage, date: 1, from: sender,
           chat: data.chat_id === group.id || method === 'sendDocument' ? group : { id: data.chat_id, type: 'private' },
           text: data.text, reply_markup: data.reply_markup,
         };
@@ -74,11 +83,21 @@ test('два веб-подключения, общий черновик и от�
         result = messages.find((entry) => entry.message_id === data.message_id);
         if (result) result.reply_markup = data.reply_markup;
         break;
-      case 'answerCallbackQuery': callbacks.push(data); break;
-      case 'getUpdates':
-        await delay(20);
-        result = updates.filter((update) => update.update_id >= (data.offset ?? 0));
+      case 'editMessageText':
+        result = messages.find((entry) => entry.message_id === data.message_id);
+        if (result) {
+          statusEdits.push(data.text);
+          result.text = data.text;
+        }
         break;
+      case 'answerCallbackQuery': callbacks.push(data); break;
+      case 'getUpdates': {
+        const minimum = Math.max(data.offset ?? 0, confirmedUpdates.get(sender.id) ?? 0);
+        confirmedUpdates.set(sender.id, minimum);
+        await delay(20);
+        result = updates.filter((update) => update.update_id >= minimum);
+        break;
+      }
     }
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({ ok: true, result }));
@@ -103,11 +122,14 @@ test('два веб-подключения, общий черновик и от�
     workerEnv[`RUNNER_${slot}_SECRET`] = 'slot-' + slot;
     launch('src/runner.js', { DATA_DIR: home, PORT: port, RUNNER_SECRET: 'slot-' + slot, CODEX_BIN: resolve('test/fixtures/codex.js') });
   }
-  launch('src/bot.js', {
+  const botEnv = {
     ...workerEnv, DATA_DIR: join(dir, 'bot'), PORT: webPort, PUBLIC_URL: publicUrl,
     TELEGRAM_BOT_TOKEN: '88:fixture', TELEGRAM_GROUP_ID: group.id,
     TELEGRAM_API_ROOT: 'http://127.0.0.1:' + telegramPort,
-  });
+    TELEGRAM_ARCHIVE_DIR: join(dir, 'archive'),
+    AGENT_BOT_ENCRYPTION_KEY: 'a'.repeat(64),
+  };
+  const botProcess = launch('src/bot.js', botEnv);
 
   function message(from, text, options = {}) {
     const message = { message_id: ++nextMessage, date: 1, from, chat: group, text, ...options };
@@ -140,17 +162,46 @@ test('два веб-подключения, общий черновик и от�
   assert.match(await (await fetch(publicUrl)).text(), /Твой агент/);
   assert.equal((await web('status')).status, 401);
 
+  const cookies = [];
   for (const [index, user] of users.slice(0, 2).entries()) {
     const greeting = message(user, 'Привет');
-    message(users[0], '/allow', { reply_to_message: greeting });
-    await waitReply((entry) => entry.text?.includes(`tg://user?id=${user.id}`) && entry.text.includes('слот готов'), 'одобренный слот');
-    message(user, '/start setup', { chat: { id: user.id, type: 'private' } });
+    const privateChat = { id: user.id, type: 'private' };
+    if (index === 0) {
+      message(users[0], '/allow', { reply_to_message: greeting });
+      await waitReply((entry) => entry.text?.includes(`tg://user?id=${user.id}`) && entry.text.includes('слот готов'), 'одобренный слот');
+      message(user, '/start setup', { chat: privateChat });
+    } else {
+      message(users[0], '/invite@fixture_bot', { reply_to_message: greeting });
+      const sharedInvite = await waitReply((entry) => entry.text?.includes('?start=join_'), 'ссылка для передачи');
+      const payload = new URL(sharedInvite.text.split('\n').at(-1)).searchParams.get('start');
+      const database = new DatabaseSync(join(botEnv.DATA_DIR, 'bot.sqlite'));
+      database.prepare('UPDATE onboarding_invites SET expires = ? WHERE user_id = ?').run(Date.now() - 1_000, user.id);
+      message(user, '/start ' + payload, { chat: privateChat });
+      await waitReply((entry) => entry.chat.id === user.id && entry.text?.includes('ссылка недействительна'), 'просроченная ссылка');
+      message(user, '/setup', { chat: privateChat });
+      await waitReply((entry) => entry.chat.id === user.id && entry.text?.includes('/invite'), 'просроченная ссылка не занимает слот');
+      database.prepare('UPDATE onboarding_invites SET expires = ? WHERE user_id = ?').run(Date.now() + 60_000, user.id);
+      database.close();
+      message(users[0], '/start ' + payload, { chat: { id: users[0].id, type: 'private' } });
+      await waitReply((entry) => entry.chat.id === users[0].id && entry.text?.includes('ссылка недействительна'), 'чужой не может открыть приглашение');
+      message(user, '/start ' + payload, { chat: privateChat });
+    }
     const invite = await waitReply((entry) => entry.chat.id === user.id && entry.reply_markup, 'личная ссылка');
     const code = new URL(invite.reply_markup.inline_keyboard[0][0].url).hash.slice(1);
     const claim = await web('claim', { body: { code } });
     assert.equal(claim.status, 200);
     assert.equal((await web('claim', { body: { code } })).status, 410);
     const cookie = claim.headers.get('set-cookie').split(';')[0];
+    cookies.push(cookie);
+    if (index === 1) {
+      assert.equal((await web('bot', { body: { token: personalToken } })).status, 401);
+      assert.equal((await web('bot', { cookie, body: { token: 'wrong' } })).status, 400);
+      const connected = await web('bot', { cookie, body: { token: personalToken } });
+      assert.equal(connected.status, 200);
+      assert.deepEqual(await connected.json(), { username: personalBot.username });
+      const duplicate = await web('bot', { cookie: cookies[0], body: { token: personalToken } });
+      assert.equal(duplicate.status, 409);
+    }
     const name = index === 0 ? 'Архимед' : 'Софья';
     const started = await web('profile', { cookie, body: { name, instructions: 'Покажи ход рассуждения.', mode: 'connect' } });
     assert.equal(started.status, 200);
@@ -163,6 +214,18 @@ test('два веб-подключения, общий черновик и от�
   message(users[2], '/start', { chat: { id: users[2].id, type: 'private' } });
   await waitReply((entry) => entry.chat.id === users[2].id && entry.text.includes('/allow'), 'чужой не может подключить слот');
 
+  message(users[2], 'Обычное сообщение о работе группы');
+  message(personalBot, 'Ответ другого агента в общей группе');
+  message(users[2], undefined, { document: { file_id: 'context-file', file_name: 'context.xlsx' } });
+  const historyPath = join(dir, 'archive', String(group.id), 'history.jsonl');
+  await until(async () => {
+    const history = await readFile(historyPath, 'utf8').catch(() => '');
+    return history.includes('Обычное сообщение о работе группы') && history.includes('Ответ другого агента в общей группе')
+      && history.includes('/context.xlsx');
+  }, 'переписка и вложение доступны до запуска');
+  assert.equal((await turns(1)).length, 0);
+  assert.equal((await turns(2)).length, 0);
+
   const beforeTask = messages.length;
   message(users[0], undefined, { caption: '/new Проверить проект', document: { file_id: 'file-one', file_name: 'brief.txt' } });
   const draft = await until(() => messages[beforeTask], 'карточка первого хода');
@@ -173,6 +236,10 @@ test('два веб-подключения, общий черновик и от�
 
   const review = await waitReply((entry) => entry.text?.includes('запустить своего агента «Софья»'), 'запрос второго агента');
   assert.equal((await turns(1)).length, 1, '/new владельца сразу запускает один ход');
+  const firstInput = (await turns(1))[0].params.input[0].text;
+  assert.match(firstInput, /Обычное сообщение о работе группы/);
+  assert.match(firstInput, /Ответ другого агента в общей группе/);
+  assert.match(firstInput, /context\.xlsx/);
   assert.equal((await turns(2)).length, 0, 'запрос агента не запускает модель');
   assert.match(await readFile(join(homes[0], 'work', '1', 'input-brief.txt'), 'utf8'), /Текст задания/);
   assert.ok(messages.some((entry) => entry.text?.includes('Черновик ＠unknown')));
@@ -188,12 +255,27 @@ test('два веб-подключения, общий черновик и от�
   assert.match(question.text, /tg:\/\/user\?id=22/);
   assert.match((await turns(2))[0].params.input[0].text, /peer-\d+-draft.txt/);
   message(users[0], 'Чужой ответ', { reply_to_message: question });
-  message(users[1], '@fixture_bot Берём датасет B', { reply_to_message: question });
+  const attachment = message(users[1], undefined, {
+    reply_to_message: question, media_group_id: 'album',
+    document: { file_id: 'first', file_name: 'first.txt' },
+  });
+  await waitReply((entry) => entry.text?.includes('Ответ получен. Собираю файлы альбома'), 'подтверждение получения альбома');
+  assert.equal((await turns(2)).length, 1, 'агент ждёт остальные файлы альбома');
+  const sibling = message(users[1], undefined, {
+    media_group_id: 'album', document: { file_id: 'second', file_name: 'second.txt' },
+  });
   await waitReply((entry) => entry.text?.includes('Итог с учётом ответа.'), 'финальный ответ');
+  await waitReply((entry) => entry.text === '<b>Софья</b> · Ход завершён', 'итоговый статус хода');
+  assert.ok(statusEdits.includes('<b>Софья</b> · Работаю над задачей…'));
+  for (const file of [attachment, sibling]) {
+    assert.equal(await readFile(join(botEnv.TELEGRAM_ARCHIVE_DIR, String(group.id), 'files',
+      String(group.id), String(file.message_id), file.document.file_name), 'utf8'), 'Текст задания');
+  }
   assert.equal((await turns(2)).length, 2, 'двойное нажатие и чужой ответ не добавили ход');
   const second = (await turns(2))[1];
-  assert.match(second.params.input[0].text, /Берём датасет B/);
-  assert.doesNotMatch(second.params.input[0].text, /Чужой ответ/);
+  const ownerAnswer = second.params.input[0].text.split('\n').find((line) => line.startsWith('Уточнение к этому ходу:'));
+  assert.match(ownerAnswer, /Владелец приложил файл или альбом/);
+  assert.doesNotMatch(ownerAnswer, /Чужой ответ/);
   assert.match(await readFile(join(homes[0], 'work', '1', 'AGENTS.md'), 'utf8'), /vps-info/);
   assert.ok((await getEvents(2)).some(({ method, params }) => method === 'thread/resume' && params.threadId === second.params.threadId));
 
@@ -214,4 +296,23 @@ test('два веб-подключения, общий черновик и от�
     assert.equal(params.model, 'gpt-6.2-sol');
     assert.equal(params.effort, 'low');
   }
+
+  const exited = once(botProcess, 'exit');
+  botProcess.kill('SIGTERM');
+  await exited;
+  const database = await readFile(join(botEnv.DATA_DIR, 'bot.sqlite'));
+  assert.equal(database.includes(personalToken), false, 'токен зашифрован в базе');
+  launch('src/bot.js', botEnv);
+  await until(async () => (await fetch(publicUrl + '/health').catch(() => null))?.ok, 'бот перезапустился');
+  const recovered = await (await web('status', { cookie: cookies[1] })).json();
+  assert.equal(recovered.personalBot.username, personalBot.username);
+  assert.equal(recovered.auth.status, 'connected');
+
+  const beforePersonalTask = messages.length;
+  message(users[0], '/new@fixture_personal_bot Попытка чужого запуска');
+  message(users[1], '/new@fixture_personal_bot Проверка личного бота');
+  await until(() => messages.slice(beforePersonalTask).find((entry) =>
+    entry.from.id === personalBot.id && entry.text?.includes('Итог с учётом ответа.')), 'личный бот публикует результат после рестарта');
+  assert.equal((await turns(2)).length, 3);
+  assert.ok(!messages.slice(beforePersonalTask).some((entry) => entry.text?.includes('Попытка чужого запуска')));
 });

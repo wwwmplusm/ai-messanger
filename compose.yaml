@@ -23,15 +23,17 @@ services:
     security_opt: [no-new-privileges:true]
     environment:
       DATA_DIR: /data
+      TELEGRAM_ARCHIVE_DIR: /telegram-files
       PUBLIC_URL: ${PUBLIC_URL:?required}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?required}
       TELEGRAM_GROUP_ID: ${TELEGRAM_GROUP_ID:-}
       GROUP_SETUP_CODE: ${GROUP_SETUP_CODE:-}
+      AGENT_BOT_ENCRYPTION_KEY: ${AGENT_BOT_ENCRYPTION_KEY:-}
       RUNNER_1_URL: http://agent-one:8081
       RUNNER_2_URL: http://agent-two:8081
       RUNNER_1_SECRET: ${RUNNER_1_SECRET:?required}
       RUNNER_2_SECRET: ${RUNNER_2_SECRET:?required}
-    volumes: [bot-data:/data]
+    volumes: [bot-data:/data, telegram-files:/telegram-files]
     networks: [web, agent-one, agent-two]
     depends_on: [agent-one, agent-two]
 
@@ -39,16 +41,20 @@ services:
     <<: *runner
     environment:
       DATA_DIR: /data
+      TELEGRAM_ARCHIVE_DIR: /telegram-files
+      TELEGRAM_GROUP_ID: ${TELEGRAM_GROUP_ID:-}
       RUNNER_SECRET: ${RUNNER_1_SECRET:?required}
-    volumes: [agent-one-data:/data]
+    volumes: [agent-one-data:/data, telegram-files:/telegram-files:ro]
     networks: [agent-one]
 
   agent-two:
     <<: *runner
     environment:
       DATA_DIR: /data
+      TELEGRAM_ARCHIVE_DIR: /telegram-files
+      TELEGRAM_GROUP_ID: ${TELEGRAM_GROUP_ID:-}
       RUNNER_SECRET: ${RUNNER_2_SECRET:?required}
-    volumes: [agent-two-data:/data]
+    volumes: [agent-two-data:/data, telegram-files:/telegram-files:ro]
     networks: [agent-two]
 
   caddy:
@@ -72,6 +78,7 @@ networks:
 
 volumes:
   bot-data:
+  telegram-files:
   agent-one-data:
   agent-two-data:
   caddy-data:

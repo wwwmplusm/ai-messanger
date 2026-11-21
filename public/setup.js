@@ -3,6 +3,11 @@ const notice = get('notice');
 const profile = get('profile');
 const verify = get('verify');
 const back = get('back');
+const botForm = get('bot-form');
+const botSettings = get('bot-settings');
+const botStatus = get('bot-status');
+const botToken = get('bot-token');
+const saveBot = get('save-bot');
 let polling;
 let busy = false;
 
@@ -22,17 +27,26 @@ function tell(message, error = false) {
   notice.classList.toggle('error', error);
 }
 
+function showPersonalBot(username, running = true) {
+  botStatus.textContent = username ? `Сохранён @${username}` : '';
+  if (username && !running) botStatus.textContent += '. Бот сейчас недоступен. Проверь токен и повтори подключение.';
+  get('bot-action').textContent = username ? 'Обновить токен' : 'Подключить своего бота';
+  botSettings.open = !username;
+  if (username) back.href = `https://t.me/${username}`;
+}
+
 function show(auth) {
   clearTimeout(polling);
   const connected = auth.status === 'connected';
   const pending = auth.status === 'pending';
   profile.hidden = pending;
   verify.hidden = !pending;
+  if (botForm.dataset.enabled) botForm.hidden = pending;
   back.hidden = !connected || !back.href;
   get('reconnect').hidden = !connected;
   get('connect').dataset.mode = connected ? 'save' : 'connect';
   get('connect').textContent = connected ? 'Сохранить профиль' : 'Подключить Codex';
-  if (connected) tell('Codex подключён. Агент готов к запуску из Telegram.');
+  if (connected) tell('Codex подключён. Начни задачу командой /new в Telegram.');
   if (auth.status === 'idle') tell('Подключение аккаунта');
   if (auth.status === 'failed' || auth.status === 'expired') {
     tell('Вход не завершён. Получи новый код и попробуй ещё раз.', true);
@@ -77,6 +91,23 @@ profile.addEventListener('submit', (event) => {
   event.preventDefault();
   void update(get('connect').dataset.mode);
 });
+botForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (saveBot.disabled) return;
+  saveBot.disabled = true;
+  botStatus.textContent = 'Проверяем бота в Telegram…';
+  botStatus.classList.remove('error');
+  try {
+    const { username } = await api('POST', 'bot', { token: botToken.value.trim() });
+    botToken.value = '';
+    showPersonalBot(username);
+  } catch (error) {
+    botStatus.textContent = error.message;
+    botStatus.classList.add('error');
+  } finally {
+    saveBot.disabled = false;
+  }
+});
 get('reconnect').addEventListener('click', () => void update('restart'));
 get('new-code').addEventListener('click', () => void update('restart'));
 get('copy').addEventListener('click', async () => {
@@ -104,6 +135,10 @@ try {
   get('agent-name').value = state.profile.name;
   get('instructions').value = state.profile.instructions;
   back.href = state.telegram;
+  if (state.personalBot.enabled) {
+    botForm.dataset.enabled = 'true';
+    showPersonalBot(state.personalBot.username, state.personalBot.running);
+  }
   show(state.auth);
 } catch (error) {
   tell(error.message, true);

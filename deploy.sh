@@ -2,6 +2,7 @@
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 umask 077
+random_hex() { od -An -N32 -tx1 /dev/urandom | tr -d ' \n'; }
 
 if [[ ! -f .env ]]; then
   domain=${1:-}
@@ -25,7 +26,6 @@ if [[ ! -f .env ]]; then
     echo "Токен Telegram имеет неверный формат." >&2
     exit 1
   fi
-  random_hex() { od -An -N32 -tx1 /dev/urandom | tr -d ' \n'; }
   group_code=$(random_hex)
   runner_one=$(random_hex)
   runner_two=$(random_hex)
@@ -38,6 +38,10 @@ RUNNER_1_SECRET=$runner_one
 RUNNER_2_SECRET=$runner_two
 CONFIG
   unset bot_token
+fi
+
+if ! grep -q '^AGENT_BOT_ENCRYPTION_KEY=.' .env; then
+  printf '\nAGENT_BOT_ENCRYPTION_KEY=%s\n' "$(random_hex)" >> .env
 fi
 
 docker compose up -d --build

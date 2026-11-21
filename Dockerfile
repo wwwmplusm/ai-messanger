@@ -1,6 +1,6 @@
 FROM node:24-bookworm-slim AS base
 WORKDIR /app
-RUN install -d -o node -g node -m 0700 /data
+RUN install -d -o node -g node -m 0700 /data /telegram-files
 
 FROM base AS bot
 COPY package*.json ./

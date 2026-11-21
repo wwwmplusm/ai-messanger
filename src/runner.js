@@ -16,6 +16,9 @@ const maxRequest = Math.ceil(maxFileBytes * 8 / 3) + 250_000;
 const model = 'gpt-6.2-sol';
 const handbook = new URL('../AGENTS.md', import.meta.url);
 const developerInstructions = await readFile(handbook, 'utf8');
+const archiveRule = process.env.TELEGRAM_ARCHIVE_DIR && /^-\d+$/.test(process.env.TELEGRAM_GROUP_ID ?? '')
+  ? `${JSON.stringify(join(process.env.TELEGRAM_ARCHIVE_DIR, process.env.TELEGRAM_GROUP_ID))} = "read"`
+  : '';
 
 await mkdir(codexHome, { recursive: true, mode: 0o700 });
 await mkdir(workspaceRoot, { recursive: true, mode: 0o700 });
@@ -43,6 +46,7 @@ extends = ":workspace"
 "${codexHome}/tmp" = "read"
 "${codexHome}/auth.json" = "deny"
 "/vps-info" = "read"
+${archiveRule}
 
 [permissions.task.network]
 enabled = false

@@ -17,13 +17,14 @@ h2 { font-size: 2rem; letter-spacing: -.035em; }
 p { margin-block: .8rem 0; }
 .intro { max-inline-size: 30ch; font-size: 1.1rem; margin-block: 1.15rem 1.6rem; }
 .notice { border-block-start: 1px solid var(--edge); padding-block-start: .8rem; color: var(--subtle); }
-.notice.error { color: #8c2340; }
+.notice.error, #bot-status.error { color: #8c2340; }
 form, section { margin-block-start: 1.2rem; }
 .owner, .waiting { font-size: .93rem; color: var(--subtle); margin-block-end: .8rem; }
 label { display: block; font-weight: 600; margin-block-end: .35rem; }
 input, textarea { background: #fffcff; border: 1px solid var(--edge); color: inherit; font: inherit; padding: .68rem .75rem; inline-size: 100%; border-radius: .3rem; }
 textarea { margin-block-start: .55rem; resize: vertical; }
 details { margin-block: 1rem; }
+#save-bot { margin-block-start: .65rem; }
 summary { color: var(--accent); cursor: pointer; }
 button, .action { font: inherit; font-weight: 650; min-block-size: 2.75rem; border-radius: .3rem; cursor: pointer; }
 button { border: 1px solid transparent; }
