@@ -165,22 +165,14 @@ test('два веб-подключения, общий черновик и от�
 
   const beforeTask = messages.length;
   message(users[0], undefined, { caption: '/new Проверить проект', document: { file_id: 'file-one', file_name: 'brief.txt' } });
-  const draft = await waitReply((entry) => entry.reply_markup?.inline_keyboard[0][0].text === 'Запустить «Архимед»', 'кнопка первого хода');
-  assert.equal(messages.length - beforeTask, 1, '/new публикует одну карточку');
+  const draft = await until(() => messages[beforeTask], 'карточка первого хода');
   assert.equal(draft.text, 'Проверить проект\n\nФайл · brief.txt');
-  assert.equal(draft.reply_markup.inline_keyboard.flat().length, 1);
-  const draftAction = draft.reply_markup.inline_keyboard[0][0].callback_data;
-  const unauthorized = click(users[2], draft, draftAction);
-  assert.match((await until(() => callbacks.find((entry) => entry.callback_query_id === unauthorized), 'отказ чужому')).text, /только владелец/);
+  assert.equal(draft.reply_markup, undefined);
   message(users[2], '/run', { reply_to_message: draft });
   await waitReply((entry) => entry.text?.includes('Запуск доступен владельцу'), 'запрет чужой команды /run');
-  assert.equal((await turns(1)).length, 0);
-  assert.equal((await turns(2)).length, 0);
 
-  click(users[0], draft, draftAction);
-  click(users[0], draft, draftAction);
   const review = await waitReply((entry) => entry.text?.includes('запустить своего агента «Софья»'), 'запрос второго агента');
-  assert.equal((await turns(1)).length, 1, 'двойное нажатие не запускает второй ход');
+  assert.equal((await turns(1)).length, 1, '/new владельца сразу запускает один ход');
   assert.equal((await turns(2)).length, 0, 'запрос агента не запускает модель');
   assert.match(await readFile(join(homes[0], 'work', '1', 'input-brief.txt'), 'utf8'), /Текст задания/);
   assert.ok(messages.some((entry) => entry.text?.includes('Черновик ＠unknown')));
@@ -189,18 +181,20 @@ test('два веб-подключения, общий черновик и от�
   await until(() => callbacks.find((entry) => entry.callback_query_id === wrongOwner && entry.show_alert), 'один владелец не запускает другого');
   assert.equal((await turns(2)).length, 0);
 
-  click(users[1], review, review.reply_markup.inline_keyboard[0][0].callback_data);
+  const reviewAction = review.reply_markup.inline_keyboard[0][0].callback_data;
+  click(users[1], review, reviewAction);
+  click(users[1], review, reviewAction);
   const question = await waitReply((entry) => entry.text?.includes('Какой датасет берём?'), 'вопрос своему владельцу');
   assert.match(question.text, /tg:\/\/user\?id=22/);
   assert.match((await turns(2))[0].params.input[0].text, /peer-\d+-draft.txt/);
   message(users[0], 'Чужой ответ', { reply_to_message: question });
   message(users[1], 'Берём датасет B', { reply_to_message: question });
-  const continueMessage = await waitReply((entry) => entry.text?.includes('Ответ сохранён.'), 'подтверждение продолжения');
-  assert.equal((await turns(2)).length, 1, 'ответ сам по себе не запускает модель');
-  click(users[1], continueMessage, continueMessage.reply_markup.inline_keyboard[0][0].callback_data);
   await waitReply((entry) => entry.text?.includes('Итог с учётом ответа.'), 'финальный ответ');
+  assert.equal((await turns(2)).length, 2, 'двойное нажатие и чужой ответ не добавили ход');
   const second = (await turns(2))[1];
   assert.match(second.params.input[0].text, /Берём датасет B/);
+  assert.doesNotMatch(second.params.input[0].text, /Чужой ответ/);
+  assert.match(await readFile(join(homes[0], 'work', '1', 'AGENTS.md'), 'utf8'), /vps-info/);
   assert.ok((await getEvents(2)).some(({ method, params }) => method === 'thread/resume' && params.threadId === second.params.threadId));
 
   message(users[2], '/ask Проверь выводы', { reply_to_message: draft });

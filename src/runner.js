@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { mkdir, open, realpath, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, open, readFile, realpath, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { basename, join, resolve } from 'node:path';
 import { connectCodex } from './codex.js';
@@ -14,6 +14,8 @@ const codexHome = join(home, '.codex');
 const loginTimeout = 15 * 60_000;
 const maxRequest = Math.ceil(maxFileBytes * 8 / 3) + 250_000;
 const model = 'gpt-6.2-sol';
+const handbook = new URL('../AGENTS.md', import.meta.url);
+const developerInstructions = await readFile(handbook, 'utf8');
 
 await mkdir(codexHome, { recursive: true, mode: 0o700 });
 await mkdir(workspaceRoot, { recursive: true, mode: 0o700 });
@@ -40,6 +42,7 @@ extends = ":workspace"
 ":minimal" = "read"
 "${codexHome}/tmp" = "read"
 "${codexHome}/auth.json" = "deny"
+"/vps-info" = "read"
 
 [permissions.task.network]
 enabled = false
@@ -225,9 +228,12 @@ async function runJob(rpc, body) {
     const cwd = join(workspaceRoot, String(body.taskId));
     await mkdir(cwd, { recursive: true, mode: 0o700 });
     if (await realpath(cwd) !== cwd) throw new HttpError(400, 'Неверная папка задачи.');
+    await copyFile(handbook, join(cwd, 'AGENTS.md'), constants.COPYFILE_EXCL).catch((error) => {
+      if (error.code !== 'EEXIST') throw error;
+    });
     const original = await saveInput(cwd, body.attachment, 'input-');
     const handoff = await saveInput(cwd, body.handoff, `peer-${body.jobId}-`);
-    const options = { cwd, runtimeWorkspaceRoots: [cwd], approvalPolicy: 'never', permissions: 'task', model };
+    const options = { cwd, runtimeWorkspaceRoots: [cwd], approvalPolicy: 'never', permissions: 'task', model, developerInstructions };
     const { thread } = body.threadId
       ? await rpc.call('thread/resume', { ...options, threadId: body.threadId, excludeTurns: true })
       : await rpc.call('thread/start', options);

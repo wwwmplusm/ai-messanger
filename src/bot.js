@@ -150,16 +150,10 @@ async function newTask(ctx, input) {
     });
     const owner = store.agent(ctx.from.id);
     const draft = owner?.name && store.request(task.id, owner.user_id, 'draft', 'Подготовь первый вариант решения.');
-    const reply_markup = draft
-      ? new InlineKeyboard().text(`Запустить «${label(owner)}»`, `run:${draft.id}`)
-      : requestKeyboard(task);
-    if (forum) {
-      const sent = await post(task, card, { reply_markup });
-      if (draft) store.recordPrompt(draft.id, sent.message_id);
-    } else {
-      if (draft) store.recordPrompt(draft.id, anchor.message_id);
-      await bot.api.editMessageReplyMarkup(ctx.chat.id, anchor.message_id, { reply_markup });
-    }
+    const reply_markup = draft ? undefined : requestKeyboard(task);
+    if (forum) await post(task, card, { reply_markup });
+    else if (reply_markup) await bot.api.editMessageReplyMarkup(ctx.chat.id, anchor.message_id, { reply_markup });
+    if (draft && store.approve(draft.id, ctx.from.id)) pump();
   } finally {
     creating.delete(message.message_id);
   }
@@ -180,7 +174,7 @@ async function runOwn(ctx, task, input) {
     }
   } else {
     await ctx.reply(job?.status === 'question'
-      ? 'Добавь ответ после /run или ответь на вопрос и нажми «Запустить».'
+      ? 'Добавь ответ после /run или ответь прямо на вопрос агента.'
       : 'Этот агент уже в очереди или работает по задаче.');
   }
 }
@@ -241,7 +235,8 @@ bot.on('message', async (ctx) => {
   }
   const job = store.openJob(task.id, ctx.from.id);
   if (job?.status === 'question' && text.trim() && store.answer(job.id, ctx.from.id, msg.reply_to_message?.message_id ?? 0, text.slice(0, 4000))) {
-    await publishRequest(task, { ...store.job(job.id), note: 'Ответ сохранён. Подтверди продолжение.' });
+    pump();
+    await bot.api.editMessageReplyMarkup(store.group(), job.prompt_message).catch(() => {});
   }
 });
 
@@ -284,7 +279,7 @@ function makePrompt(task, owner, job) {
   }[job.kind];
   return `Ты агент «${owner.name}» в общей учебной задаче. Отвечай на языке участников.
 ${role}
-Пользователь подтверждает каждый ход. Ты можешь предложить следующее действие, но сам никого не запускаешь.
+Ход запускается действием владельца. Ты можешь предложить следующее действие.
 Выбирай action: done — результат готов; request_peer — нужен ход второго агента; ask_owner — остановись и задай один конкретный вопрос своему владельцу.
 В message напиши содержательный результат текущего хода. В request укажи текст вопроса или запроса. Для done верни пустой request.
 В artifact укажи имя одного созданного файла в корне рабочей папки для передачи в Telegram и второму агенту или оставь пустым.

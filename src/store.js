@@ -139,7 +139,7 @@ export function openStore(path) {
       run('UPDATE jobs SET prompt_message = ? WHERE id = ?', message, id);
     },
     answer(id, owner, replyTo, answer) {
-      return run(`UPDATE jobs SET answer = ?, status = 'pending'
+      return run(`UPDATE jobs SET answer = ?, status = 'queued'
         WHERE id = ? AND owner = ? AND prompt_message = ? AND status = 'question'`, answer, id, owner, replyTo).changes === 1;
     },
     approve(id, owner, note = '') {

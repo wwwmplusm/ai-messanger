@@ -3,10 +3,14 @@ services:
     networks:
       web:
         aliases: [ai-messanger-bot]
-  agent-one: &runner_apparmor
+  agent-one:
     security_opt:
       - apparmor=ai-messanger-runner
-  agent-two: *runner_apparmor
+    volumes:
+      - /var/lib/ai-messanger-inventory:/vps-info:ro
+  agent-two:
+    security_opt:
+      - apparmor=ai-messanger-runner
   caddy:
     profiles: [standalone-proxy]
 

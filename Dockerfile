@@ -17,5 +17,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @openai/codex@0.171.0
 COPY src/ ./src/
+COPY AGENTS.md ./
 USER node
 CMD ["node", "src/runner.js"]
