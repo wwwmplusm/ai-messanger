@@ -207,15 +207,21 @@ bot.on('message', async (ctx) => {
     });
   }
   if (command === 'agents') return listAgents(ctx);
-  if (command === 'new') {
+  const addressed = text.match(/^@([a-z0-9_]+)(?:[\s,:]+([\s\S]*))?$/i);
+  const mentionInput = addressed?.[1].toLowerCase() === bot.botInfo.username.toLowerCase()
+    ? (addressed[2] ?? '').trim()
+    : undefined;
+  const task = taskFor(msg);
+  const job = task && store.openJob(task.id, ctx.from.id);
+  const answersQuestion = job?.status === 'question' && msg.reply_to_message?.message_id === job.prompt_message;
+  if (command === 'new' || (mentionInput !== undefined && !answersQuestion)) {
     try {
-      return await newTask(ctx, input);
+      return await newTask(ctx, mentionInput ?? input);
     } catch (error) {
       if (error instanceof HttpError) return ctx.reply(error.message);
       throw error;
     }
   }
-  const task = taskFor(msg);
   if (!task) {
     if (['ask', 'run'].includes(command)) return ctx.reply('Ответь этой командой на карточку задачи или напиши её внутри темы.');
     return;
@@ -233,8 +239,8 @@ bot.on('message', async (ctx) => {
       reply_markup: requestKeyboard(task),
     });
   }
-  const job = store.openJob(task.id, ctx.from.id);
-  if (job?.status === 'question' && text.trim() && store.answer(job.id, ctx.from.id, msg.reply_to_message?.message_id ?? 0, text.slice(0, 4000))) {
+  const answer = mentionInput ?? text.trim();
+  if (answersQuestion && answer && store.answer(job.id, ctx.from.id, msg.reply_to_message.message_id, answer.slice(0, 4000))) {
     pump();
     await bot.api.editMessageReplyMarkup(store.group(), job.prompt_message).catch(() => {});
   }

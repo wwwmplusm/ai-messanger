@@ -188,7 +188,7 @@ test('два веб-подключения, общий черновик и от�
   assert.match(question.text, /tg:\/\/user\?id=22/);
   assert.match((await turns(2))[0].params.input[0].text, /peer-\d+-draft.txt/);
   message(users[0], 'Чужой ответ', { reply_to_message: question });
-  message(users[1], 'Берём датасет B', { reply_to_message: question });
+  message(users[1], '@fixture_bot Берём датасет B', { reply_to_message: question });
   await waitReply((entry) => entry.text?.includes('Итог с учётом ответа.'), 'финальный ответ');
   assert.equal((await turns(2)).length, 2, 'двойное нажатие и чужой ответ не добавили ход');
   const second = (await turns(2))[1];
@@ -206,6 +206,10 @@ test('два веб-подключения, общий черновик и от�
   message(users[0], '/run Проверь цифры', { reply_to_message: requested });
   const next = await until(async () => (await turns(1))[1], '/run владельца');
   assert.match(next.params.input[0].text, /Проверь цифры/);
+  const briefByMention = message(users[2], 'Проверь текст через упоминание');
+  message(users[0], '@fixture_bot', { reply_to_message: briefByMention });
+  const byMention = await until(async () => (await turns(1))[2], 'упоминание владельца');
+  assert.match(byMention.params.input[0].text, /Проверь текст через упоминание/);
   for (const { params } of [...await turns(1), ...await turns(2)]) {
     assert.equal(params.model, 'gpt-6.2-sol');
     assert.equal(params.effort, 'low');
