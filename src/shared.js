@@ -2,7 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { basename } from 'node:path';
 
 export const maxFileBytes = 8 * 1024 * 1024;
-export const maxTurnMs = 12 * 60 * 1000;
+export const maxTurnMs = 30 * 60 * 1000;
 export const token = () => randomBytes(32).toString('base64url');
 export const hash = (value) => createHash('sha256').update(value).digest('hex');
 export const sameSecret = (a, b) => typeof a === 'string' && typeof b === 'string'
