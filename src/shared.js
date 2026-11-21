@@ -59,16 +59,23 @@ export function replyError(res, error) {
 }
 
 export async function runnerRequest(owner, path, body) {
-  const response = await fetch(new URL(path, required(`RUNNER_${owner.slot}_URL`)), {
+  const { request } = await import('undici');
+  const timeout = path === '/run' ? maxTurnMs + 90_000 : 25_000;
+  const response = await request(new URL(path, required(`RUNNER_${owner.slot}_URL`)), {
     method: body ? 'POST' : 'GET',
     headers: {
       Authorization: `Bearer ${required(`RUNNER_${owner.slot}_SECRET`)}`,
       ...(body && { 'Content-Type': 'application/json' }),
     },
     body: body && JSON.stringify(body),
-    signal: AbortSignal.timeout(path === '/run' ? maxTurnMs + 20_000 : 25_000),
-  }).catch(() => { throw new HttpError(503, 'Агент недоступен. Попробуйте ещё раз.'); });
-  const result = await response.json();
-  if (!response.ok) throw new HttpError(response.status, result.error);
+    headersTimeout: timeout,
+    bodyTimeout: timeout,
+    signal: AbortSignal.timeout(timeout),
+  }).catch((error) => {
+    console.error('Связь с агентом', owner.slot, path, error.code || error.name);
+    throw new HttpError(503, 'Агент недоступен. Попробуйте ещё раз.');
+  });
+  const result = await response.body.json();
+  if (response.statusCode >= 400) throw new HttpError(response.statusCode, result.error);
   return result;
 }

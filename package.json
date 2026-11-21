@@ -12,6 +12,7 @@
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
-    "grammy": "^1.43.0"
+    "grammy": "^1.43.0",
+    "undici": "7.30.2"
   }
 }
