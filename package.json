@@ -1,0 +1,17 @@
+{
+  "name": "ai-messanger",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node src/bot.js",
+    "runner": "node src/runner.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "grammy": "^1.43.0"
+  }
+}

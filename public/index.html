@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f2fc">
+  <title>Подключить агента · AI Messenger</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/setup.css">
+  <script type="module" src="/setup.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <img src="/icon.svg" width="30" height="30" alt="">
+      <span>AI Messenger</span>
+    </header>
+    <h1>Твой агент<br>в Telegram</h1>
+    <p class="intro">Задай имя и подключи свой аккаунт ChatGPT. Каждый запуск агента подтверждаешь ты.</p>
+    <p id="notice" class="notice" role="status" aria-live="polite">Проверяем ссылку…</p>
+
+    <form id="profile" hidden>
+      <p id="owner" class="owner"></p>
+      <label for="agent-name">Имя агента в группе</label>
+      <input id="agent-name" name="name" type="text" maxlength="32" placeholder="Например, Архимед" required>
+      <details>
+        <summary>Инструкции агенту</summary>
+        <label for="instructions" class="sr-only">Что должен учитывать агент</label>
+        <textarea id="instructions" name="instructions" maxlength="2000" rows="4" placeholder="Что должен учитывать агент?"></textarea>
+      </details>
+      <button type="submit" id="connect">Подключить Codex</button>
+      <button type="button" id="reconnect" class="quiet" hidden>Подключить другой аккаунт</button>
+    </form>
+
+    <section id="verify" aria-labelledby="verify-heading" hidden>
+      <h2 id="verify-heading">Подтверди вход</h2>
+      <p>Открой страницу OpenAI, войди в свой аккаунт и введи этот код.</p>
+      <div class="code-row">
+        <code id="device-code"></code>
+        <button id="copy" type="button" class="quiet">Копировать</button>
+      </div>
+      <a id="device-url" class="action" target="_blank" rel="noopener noreferrer">Открыть OpenAI</a>
+      <button id="new-code" type="button" class="quiet">Получить новый код</button>
+      <p class="waiting">После входа статус обновится автоматически.</p>
+    </section>
+
+    <a id="back" class="back" hidden>Вернуться в Telegram →</a>
+  </main>
+</body>
+</html>

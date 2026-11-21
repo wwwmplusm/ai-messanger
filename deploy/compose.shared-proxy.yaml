@@ -1,0 +1,16 @@
+services:
+  bot:
+    networks:
+      web:
+        aliases: [ai-messanger-bot]
+  agent-one: &runner_apparmor
+    security_opt:
+      - apparmor=ai-messanger-runner
+  agent-two: *runner_apparmor
+  caddy:
+    profiles: [standalone-proxy]
+
+networks:
+  web:
+    name: web
+    external: true

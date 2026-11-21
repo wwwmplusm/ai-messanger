@@ -1,0 +1,38 @@
+:root {
+  color: #29213c;
+  background: #f5f2fc;
+  font: 1rem/1.55 system-ui, sans-serif;
+  --accent: #5824b9;
+  --subtle: #5b526c;
+  --edge: #cfc4e1;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; border-top: .35rem solid #7c3aed; }
+main { max-inline-size: 37rem; margin: 0 auto; padding: clamp(1.4rem, 6vw, 3.5rem); }
+header { display: flex; gap: .65rem; align-items: center; font-weight: 650; margin-block-end: clamp(1.6rem, 6vw, 3rem); }
+h1, h2 { font-family: Georgia, serif; font-weight: 500; line-height: 1; margin: 0; }
+h1 { font-size: clamp(2.85rem, 10vw, 4.5rem); letter-spacing: -.055em; }
+h2 { font-size: 2rem; letter-spacing: -.035em; }
+p { margin-block: .8rem 0; }
+.intro { max-inline-size: 30ch; font-size: 1.1rem; margin-block: 1.15rem 1.6rem; }
+.notice { border-block-start: 1px solid var(--edge); padding-block-start: .8rem; color: var(--subtle); }
+.notice.error { color: #8c2340; }
+form, section { margin-block-start: 1.2rem; }
+.owner, .waiting { font-size: .93rem; color: var(--subtle); margin-block-end: .8rem; }
+label { display: block; font-weight: 600; margin-block-end: .35rem; }
+input, textarea { background: #fffcff; border: 1px solid var(--edge); color: inherit; font: inherit; padding: .68rem .75rem; inline-size: 100%; border-radius: .3rem; }
+textarea { margin-block-start: .55rem; resize: vertical; }
+details { margin-block: 1rem; }
+summary { color: var(--accent); cursor: pointer; }
+button, .action { font: inherit; font-weight: 650; min-block-size: 2.75rem; border-radius: .3rem; cursor: pointer; }
+button { border: 1px solid transparent; }
+button:not(.quiet), .action { background: var(--accent); color: #fffaff; padding: .58rem .95rem; text-align: center; text-decoration: none; display: inline-grid; place-items: center; }
+button:disabled { opacity: .65; cursor: wait; }
+.quiet { background: none; color: var(--accent); padding: .4rem .5rem; }
+button:hover:not(:disabled), .action:hover { filter: brightness(.86); }
+:focus-visible { outline: .16rem solid #45208c; outline-offset: .15rem; }
+.code-row { display: flex; flex-wrap: wrap; align-items: center; gap: .55rem; margin-block: 1rem; }
+code { font-size: clamp(1rem, 5vw, 1.55rem); letter-spacing: .06em; background: #e8def8; padding: .3rem .65rem; user-select: all; }
+.back { color: var(--accent); font-weight: 650; display: inline-block; margin-block-start: 1.4rem; }
+.sr-only { position: absolute; inline-size: 1px; block-size: 1px; overflow: hidden; clip-path: inset(50%); }
