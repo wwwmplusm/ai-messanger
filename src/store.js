@@ -186,6 +186,13 @@ export function openStore(path) {
     recordPrompt(id, message) {
       run('UPDATE jobs SET prompt_message = ? WHERE id = ?', message, id);
     },
+    obsoleteStatuses() {
+      return all("SELECT id FROM jobs WHERE status_message IS NOT NULL AND status IN ('done', 'declined')");
+    },
+    closedStatuses(taskId, owner) {
+      return all(`SELECT id FROM jobs WHERE task_id = ? AND owner = ? AND status_message IS NOT NULL
+        AND status IN ('done', 'failed', 'declined')`, taskId, owner);
+    },
     recordStatus(id, message) {
       run('UPDATE jobs SET status_message = ? WHERE id = ?', message, id);
     },

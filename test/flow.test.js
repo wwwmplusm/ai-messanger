@@ -42,11 +42,13 @@ test('приглашение личного бота, два изолирова�
   const diagnostics = [];
   const messages = [];
   const statusEdits = [];
+  const deletedMessages = [];
   const updates = [];
   const callbacks = [];
   const confirmedUpdates = new Map();
   let nextMessage = 100;
   let nextUpdate = 0;
+  let failNextResult = false;
   function launch(script, env) {
     const child = spawn(process.execPath, [script], { env: { PATH: process.env.PATH, ...env } });
     child.stderr.on('data', (chunk) => diagnostics.push(chunk.toString()));
@@ -62,6 +64,14 @@ test('приглашение личного бота, два изолирова�
     for await (const piece of req) pieces.push(piece);
     const content = Buffer.concat(pieces).toString();
     const data = req.headers['content-type']?.includes('application/json') && content ? JSON.parse(content) : {};
+    const reply = method === 'sendDocument'
+      ? JSON.parse(content.match(/name="reply_parameters"\r\n\r\n([^\r\n]+)/)?.[1] ?? 'null')
+      : data.reply_parameters;
+    res.setHeader('Content-Type', 'application/json');
+    if (failNextResult && data.text?.includes('Итог с учётом ответа.')) {
+      failNextResult = false;
+      return res.end(JSON.stringify({ ok: false, error_code: 400, description: 'Публикация не удалась' }));
+    }
     let result = true;
     switch (method) {
       case 'getMe': result = sender; break;
@@ -70,12 +80,16 @@ test('приглашение личного бота, два изолирова�
         result = { status: data.user_id === users[0].id ? 'administrator' : 'member' };
         break;
       case 'getFile': result = { file_path: 'documents/brief.txt' }; break;
+      case 'createForumTopic':
+        result = { message_thread_id: ++nextMessage };
+        break;
       case 'sendMessage':
       case 'sendDocument':
         result = {
           message_id: ++nextMessage, date: 1, from: sender,
           chat: data.chat_id === group.id || method === 'sendDocument' ? group : { id: data.chat_id, type: 'private' },
-          text: data.text, reply_markup: data.reply_markup,
+          text: data.text, reply_markup: data.reply_markup, reply_parameters: reply,
+          message_thread_id: data.message_thread_id,
         };
         messages.push(result);
         break;
@@ -90,6 +104,11 @@ test('приглашение личного бота, два изолирова�
           result.text = data.text;
         }
         break;
+      case 'deleteMessage': {
+        const index = messages.findIndex((entry) => entry.message_id === data.message_id);
+        if (index !== -1) deletedMessages.push(messages.splice(index, 1)[0]);
+        break;
+      }
       case 'answerCallbackQuery': callbacks.push(data); break;
       case 'getUpdates': {
         const minimum = Math.max(data.offset ?? 0, confirmedUpdates.get(sender.id) ?? 0);
@@ -99,7 +118,6 @@ test('приглашение личного бота, два изолирова�
         break;
       }
     }
-    res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({ ok: true, result }));
   });
   t.after(async () => {
@@ -161,6 +179,12 @@ test('приглашение личного бота, два изолирова�
   await until(async () => (await fetch(publicUrl + '/health').catch(() => null))?.ok, 'сервер регистрации');
   assert.match(await (await fetch(publicUrl)).text(), /Твой агент/);
   assert.equal((await web('status')).status, 401);
+
+  const unboundChat = { id: -9350002, type: 'group' };
+  const outsideGreeting = message(users[1], 'Привет', { chat: unboundChat });
+  message(users[0], '/invite@fixture_bot', { chat: unboundChat, reply_to_message: outsideGreeting });
+  await waitReply((entry) => entry.chat.id === unboundChat.id && entry.text?.includes('Этот чат ещё не подключён'),
+    'в другой группе бот объясняет, почему приглашение недоступно');
 
   const cookies = [];
   for (const [index, user] of users.slice(0, 2).entries()) {
@@ -227,10 +251,11 @@ test('приглашение личного бота, два изолирова�
   assert.equal((await turns(2)).length, 0);
 
   const beforeTask = messages.length;
-  message(users[0], undefined, { caption: '/new Проверить проект', document: { file_id: 'file-one', file_name: 'brief.txt' } });
+  const source = message(users[0], undefined, { caption: '/new Проверить проект', document: { file_id: 'file-one', file_name: 'brief.txt' } });
   const draft = await until(() => messages[beforeTask], 'карточка первого хода');
   assert.equal(draft.text, 'Проверить проект\n\nФайл · brief.txt');
   assert.equal(draft.reply_markup, undefined);
+  assert.deepEqual(draft.reply_parameters, { message_id: source.message_id });
   message(users[2], '/run', { reply_to_message: draft });
   await waitReply((entry) => entry.text?.includes('Запуск доступен владельцу'), 'запрет чужой команды /run');
 
@@ -242,7 +267,10 @@ test('приглашение личного бота, два изолирова�
   assert.match(firstInput, /context\.xlsx/);
   assert.equal((await turns(2)).length, 0, 'запрос агента не запускает модель');
   assert.match(await readFile(join(homes[0], 'work', '1', 'input-brief.txt'), 'utf8'), /Текст задания/);
-  assert.ok(messages.some((entry) => entry.text?.includes('Черновик ＠unknown')));
+  const draftReplies = messages.filter((entry) => entry.reply_parameters?.message_id === draft.message_id);
+  assert.ok(draftReplies.some((entry) => entry.text?.includes('Черновик ＠unknown')));
+  assert.ok(draftReplies.some((entry) => entry.text === undefined), 'файл отправлен ответом на карточку');
+  assert.equal(deletedMessages.filter((entry) => entry.text?.startsWith('<b>Архимед</b> ·')).length, 1);
 
   const wrongOwner = click(users[0], review, review.reply_markup.inline_keyboard[0][0].callback_data);
   await until(() => callbacks.find((entry) => entry.callback_query_id === wrongOwner && entry.show_alert), 'один владелец не запускает другого');
@@ -259,13 +287,15 @@ test('приглашение личного бота, два изолирова�
     reply_to_message: question, media_group_id: 'album',
     document: { file_id: 'first', file_name: 'first.txt' },
   });
-  await waitReply((entry) => entry.text?.includes('Ответ получен. Собираю файлы альбома'), 'подтверждение получения альбома');
+  const albumStatus = await waitReply((entry) => entry.text?.includes('Ответ получен. Собираю файлы альбома'), 'подтверждение получения альбома');
   assert.equal((await turns(2)).length, 1, 'агент ждёт остальные файлы альбома');
   const sibling = message(users[1], undefined, {
     media_group_id: 'album', document: { file_id: 'second', file_name: 'second.txt' },
   });
-  await waitReply((entry) => entry.text?.includes('Итог с учётом ответа.'), 'финальный ответ');
-  await waitReply((entry) => entry.text === '<b>Софья</b> · Ход завершён', 'итоговый статус хода');
+  const result = await waitReply((entry) => entry.text?.includes('Итог с учётом ответа.'), 'финальный ответ');
+  assert.deepEqual(result.reply_parameters, { message_id: draft.message_id });
+  await until(() => deletedMessages.includes(albumStatus), 'статус удалён после результата');
+  assert.equal(messages.some((entry) => entry.text?.includes('Ход завершён')), false);
   assert.ok(statusEdits.includes('<b>Софья</b> · Работаю над задачей…'));
   for (const file of [attachment, sibling]) {
     assert.equal(await readFile(join(botEnv.TELEGRAM_ARCHIVE_DIR, String(group.id), 'files',
@@ -302,8 +332,14 @@ test('приглашение личного бота, два изолирова�
   await exited;
   const database = await readFile(join(botEnv.DATA_DIR, 'bot.sqlite'));
   assert.equal(database.includes(personalToken), false, 'токен зашифрован в базе');
+  const legacyStatus = { message_id: ++nextMessage, text: '<b>Архимед</b> · Ход завершён' };
+  messages.push(legacyStatus);
+  const state = new DatabaseSync(join(botEnv.DATA_DIR, 'bot.sqlite'));
+  state.prepare('UPDATE jobs SET status_message = ? WHERE id = 1').run(legacyStatus.message_id);
+  state.close();
   launch('src/bot.js', botEnv);
   await until(async () => (await fetch(publicUrl + '/health').catch(() => null))?.ok, 'бот перезапустился');
+  await until(() => deletedMessages.includes(legacyStatus), 'старый статус завершения удалён при перезапуске');
   const recovered = await (await web('status', { cookie: cookies[1] })).json();
   assert.equal(recovered.personalBot.username, personalBot.username);
   assert.equal(recovered.auth.status, 'connected');
@@ -315,4 +351,24 @@ test('приглашение личного бота, два изолирова�
     entry.from.id === personalBot.id && entry.text?.includes('Итог с учётом ответа.')), 'личный бот публикует результат после рестарта');
   assert.equal((await turns(2)).length, 3);
   assert.ok(!messages.slice(beforePersonalTask).some((entry) => entry.text?.includes('Попытка чужого запуска')));
+
+  failNextResult = true;
+  message(users[0], '/new Проверка повторного запуска', { chat: { ...group, is_forum: true } });
+  const forumCard = await waitReply((entry) => entry.text === 'Проверка повторного запуска', 'карточка в теме');
+  assert.ok(forumCard.message_thread_id);
+  const forumReply = { message_id: forumCard.message_thread_id };
+  assert.deepEqual(forumCard.reply_parameters, forumReply);
+  const failure = await waitReply((entry) => entry.text?.includes('Не удалось завершить ход или опубликовать ответ.'), 'статус ошибки');
+  assert.deepEqual(failure.reply_parameters, forumReply);
+  assert.equal(messages.filter((entry) => entry.message_thread_id === forumCard.message_thread_id).length, 2);
+  message(users[0], '/run', { chat: { ...group, is_forum: true }, message_thread_id: forumCard.message_thread_id });
+  const retried = await waitReply((entry) => entry.message_thread_id === forumCard.message_thread_id
+    && entry.text?.includes('Итог с учётом ответа.'), 'результат повторного запуска в теме');
+  assert.deepEqual(retried.reply_parameters, forumReply);
+  assert.ok(deletedMessages.includes(failure), 'при повторном запуске удалён прежний статус ошибки');
+  await until(() => deletedMessages.some((entry) => entry !== failure && entry.message_thread_id === forumCard.message_thread_id),
+    'удалён статус повторного запуска');
+  assert.ok([...messages, ...deletedMessages].filter((entry) => entry !== legacyStatus)
+    .every((entry) => entry.reply_parameters?.message_id
+    && !entry.reply_parameters.allow_sending_without_reply), 'все сообщения отправлены как обязательные ответы');
 });

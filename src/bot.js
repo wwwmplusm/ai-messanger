@@ -32,9 +32,12 @@ const label = (agent) => agent.name || `Агент · ${agent.telegram_name}`;
 const person = (user) => [user.first_name, user.last_name].filter(Boolean).join(' ').slice(0, 64);
 const fromGroup = (ctx) => ctx.chat?.id === store.group();
 const messageOptions = { parse_mode: 'HTML', link_preview_options: { is_disabled: true } };
-const topicOrReply = (task) => task.forum
-  ? { message_thread_id: task.topic }
-  : { reply_parameters: { message_id: task.topic, allow_sending_without_reply: true } };
+const replyTo = (messageId) => ({ reply_parameters: { message_id: messageId } });
+const taskReply = (task) => ({
+  ...(task.forum ? { message_thread_id: task.topic } : {}),
+  ...replyTo(task.topic),
+});
+const reply = (ctx, text, options = {}) => ctx.reply(text, { ...options, ...replyTo(ctx.message.message_id) });
 const taskFor = (message) => {
   if (!message) return;
   return (message.message_thread_id && store.byTopic(message.message_thread_id))
@@ -44,7 +47,7 @@ const taskFor = (message) => {
 
 async function post(task, text, extra = {}, send = (sendWith) => sendWith(bot.api), signal) {
   const sent = await send((api) => api.sendMessage(store.group(), text, {
-    ...topicOrReply(task), ...messageOptions, ...extra,
+    ...taskReply(task), ...messageOptions, ...extra,
   }, signal));
   telegram.capture(store.group(), sent, text);
   store.recordMessage(task.id, sent.message_id);
@@ -62,7 +65,7 @@ async function showStatus(job, task, owner, state) {
         return;
       } catch (error) {
         if (error.description?.includes('message is not modified')) return;
-        if (error.error_code !== 400) throw error;
+        if (error.error_code !== 400 || !error.description?.includes('message to edit not found')) throw error;
       }
     }
     const sent = await post(task, text, {}, undefined, AbortSignal.timeout(5000));
@@ -72,11 +75,28 @@ async function showStatus(job, task, owner, state) {
   }
 }
 
+async function clearStatus(job) {
+  const message = store.job(job.id).status_message;
+  if (!message) return;
+  try {
+    await bot.api.deleteMessage(store.group(), message, AbortSignal.timeout(5000));
+  } catch (error) {
+    if (error.error_code !== 400 || !error.description?.includes('message to delete not found')) {
+      console.error('Удаление статуса', job.id, error.error_code || error.name);
+      return;
+    }
+  }
+  store.recordStatus(job.id, null);
+}
+
 const queueNotices = new Map();
 const answerAlbums = new Map();
 
 function queueJob(job, task, owner, state = 'В очереди', album) {
-  const notice = showStatus(job, task, owner, state);
+  const notice = (async () => {
+    for (const previous of store.closedStatuses(task.id, owner.user_id)) await clearStatus(previous);
+    await showStatus(job, task, owner, state);
+  })();
   queueNotices.set(job.id, album ? Promise.all([notice, album]) : notice);
   pump();
 }
@@ -121,28 +141,28 @@ async function isAdmin(chat, user) {
 
 async function setup(ctx, activeBot, input) {
   if (ctx.chat.type !== 'private') {
-    if (fromGroup(ctx)) await ctx.reply('Открой личный чат с ботом, чтобы подключить или переименовать агента.', {
+    if (fromGroup(ctx)) await reply(ctx, 'Открой личный чат с ботом, чтобы подключить или переименовать агента.', {
       reply_markup: new InlineKeyboard().url('Настроить агента', `https://t.me/${activeBot.botInfo.username}?start=setup`),
     });
     return;
   }
   const invitation = input.startsWith('join_');
   if (!store.group() || (!invitation && !store.agent(ctx.from.id))) {
-    return ctx.reply('Попроси администратора ответить /invite или /allow на твоё сообщение в группе.');
+    return reply(ctx, 'Попроси администратора ответить /invite или /allow на твоё сообщение в группе.');
   }
   const member = await bot.api.getChatMember(store.group(), ctx.from.id);
   if (['left', 'kicked'].includes(member.status) || (member.status === 'restricted' && !member.is_member)) {
-    return ctx.reply('Подключение доступно участникам группы.');
+    return reply(ctx, 'Подключение доступно участникам группы.');
   }
   if (invitation) {
     const result = store.acceptOnboarding(ctx.from.id, person(ctx.from), input.slice(5));
-    if (result === 'invalid') return ctx.reply('Эта ссылка недействительна. Если слот уже назначен тебе, отправь /setup.');
-    if (result === 'full') return ctx.reply('Сейчас оба слота заняты. Обратись к администратору группы.');
+    if (result === 'invalid') return reply(ctx, 'Эта ссылка недействительна. Если слот уже назначен тебе, отправь /setup.');
+    if (result === 'full') return reply(ctx, 'Сейчас оба слота заняты. Обратись к администратору группы.');
   } else {
     store.register(ctx.from.id, person(ctx.from));
   }
   const link = `${publicUrl}/#${store.invite(ctx.from.id)}`;
-  return ctx.reply('Открой личную ссылку, чтобы задать имя и подключить свой аккаунт Codex. Ссылка действует 10 минут.', {
+  return reply(ctx, 'Открой личную ссылку, чтобы задать имя и подключить свой аккаунт Codex. Ссылка действует 10 минут.', {
     reply_markup: new InlineKeyboard().url('Открыть настройку', link),
     protect_content: true,
   });
@@ -154,7 +174,7 @@ async function listAgents(ctx) {
     const state = status === 'connected' && owner.name ? 'подключён' : 'ожидает настройки';
     return `${plain(label(owner))} · ${plain(owner.telegram_name)} · ${state}`;
   }));
-  return ctx.reply(states.join('\n') || 'Администратор может закрепить два слота командой /allow.', { parse_mode: 'HTML' });
+  return reply(ctx, states.join('\n') || 'Администратор может закрепить два слота командой /allow.', { parse_mode: 'HTML' });
 }
 
 async function downloadTelegram(item, limit, activeBot) {
@@ -178,11 +198,11 @@ const creating = new Set();
 async function newTask(ctx, input, activeBot) {
   const message = ctx.message;
   if (store.bySource(message.message_id) || creating.has(message.message_id)) return;
-  if (!store.agents().some((owner) => owner.name)) return ctx.reply('Сначала подключите хотя бы одного агента через /setup.');
+  if (!store.agents().some((owner) => owner.name)) return reply(ctx, 'Сначала подключите хотя бы одного агента через /setup.');
   const ancestor = message.reply_to_message;
   const description = input || ancestor?.text || ancestor?.caption || '';
   if (!description && ![message, ancestor].some((entry) => entry?.document || entry?.photo)) {
-    return ctx.reply('Напиши /new и условие задачи или добавь /new в подпись к файлу.');
+    return reply(ctx, 'Напиши /new и условие задачи или добавь /new в подпись к файлу.');
   }
   creating.add(message.message_id);
   try {
@@ -192,8 +212,8 @@ async function newTask(ctx, input, activeBot) {
     const title = Array.from(description.split('\n')[0].trim() || attachment?.name || 'Задача').slice(0, 95).join('');
     const forum = Boolean(ctx.chat.is_forum);
     const card = plain(brief.slice(0, 2300)) + (attachment ? '\n\nФайл · ' + plain(attachment.name) : '');
-    const sendCard = activeBot === bot ? () => ctx.reply(card, messageOptions)
-      : () => bot.api.sendMessage(ctx.chat.id, card, messageOptions);
+    const sendCard = activeBot === bot ? () => reply(ctx, card, messageOptions)
+      : () => bot.api.sendMessage(ctx.chat.id, card, { ...messageOptions, ...replyTo(message.message_id) });
     const anchor = forum ? await bot.api.createForumTopic(ctx.chat.id, title) : await sendCard();
     const task = store.createTask({
       topic: forum ? anchor.message_thread_id : anchor.message_id,
@@ -212,7 +232,7 @@ async function newTask(ctx, input, activeBot) {
 
 async function runOwn(ctx, task, input) {
   const owner = store.agent(ctx.from.id);
-  if (!owner?.name) return ctx.reply('Запуск доступен владельцу подключённого агента.');
+  if (!owner?.name) return reply(ctx, 'Запуск доступен владельцу подключённого агента.');
   if (!store.firstRunCommand(ctx.message.message_id)) return;
   const replied = ctx.message.reply_to_message;
   const note = input || (replied?.from?.is_bot ? '' : replied?.text || replied?.caption || '');
@@ -224,7 +244,7 @@ async function runOwn(ctx, task, input) {
       await bot.api.editMessageReplyMarkup(store.group(), job.prompt_message).catch(() => {});
     }
   } else {
-    await ctx.reply(job?.status === 'question'
+    await reply(ctx, job?.status === 'question'
       ? 'Добавь ответ после /run или ответь прямо на вопрос агента.'
       : 'Этот агент уже в очереди или работает по задаче.');
   }
@@ -259,25 +279,30 @@ async function onMessage(ctx, activeBot = bot) {
   if (command === 'bind' && !store.group() && ctx.chat.type !== 'private'
     && process.env.GROUP_SETUP_CODE && sameSecret(input, process.env.GROUP_SETUP_CODE)
     && await isAdmin(ctx.chat.id, ctx.from.id) && store.bindGroup(ctx.chat.id)) {
-    return ctx.reply('Группа подключена. Ответь /allow на сообщение каждого из двух владельцев Codex.');
+    return reply(ctx, 'Группа подключена. Ответь /allow на сообщение каждого из двух владельцев Codex.');
   }
-  if (!fromGroup(ctx)) return;
+  if (!fromGroup(ctx)) {
+    if (activeBot === bot && command === 'invite' && match?.[2] && ['group', 'supergroup'].includes(ctx.chat.type)) {
+      return reply(ctx, 'Этот чат ещё не подключён. Создай приглашение в группе, к которой привязан бот.');
+    }
+    return;
+  }
   if (command === 'allow' || command === 'invite') {
-    if (!await isAdmin(ctx.chat.id, ctx.from.id)) return ctx.reply('Слоты назначает администратор группы.');
-    if (command === 'invite' && !msg.reply_to_message) return ctx.reply('Ответь /invite на сообщение владельца агента.');
+    if (!await isAdmin(ctx.chat.id, ctx.from.id)) return reply(ctx, 'Слоты назначает администратор группы.');
+    if (command === 'invite' && !msg.reply_to_message) return reply(ctx, 'Ответь /invite на сообщение владельца агента.');
     const user = msg.reply_to_message?.from ?? ctx.from;
-    if (!user || user.is_bot || msg.reply_to_message?.sender_chat) return ctx.reply('Ответь командой на сообщение человека.');
+    if (!user || user.is_bot || msg.reply_to_message?.sender_chat) return reply(ctx, 'Ответь командой на сообщение человека.');
     if (command === 'invite') {
       const code = store.createOnboarding(user.id);
-      if (!code) return ctx.reply('Оба слота уже закреплены.');
+      if (!code) return reply(ctx, 'Оба слота уже закреплены.');
       const link = `https://t.me/${bot.botInfo.username}?start=join_${code}`;
-      return ctx.reply(`Приглашение для ${person(user)}. Перешли ему эту ссылку. Она действует 24 часа.\n\n${link}`, {
+      return reply(ctx, `Приглашение для ${person(user)}. Перешли ему эту ссылку. Она действует 24 часа.\n\n${link}`, {
         link_preview_options: { is_disabled: true },
       });
     }
     const owner = store.register(user.id, person(user));
-    if (!owner) return ctx.reply('Оба слота уже закреплены.');
-    return ctx.reply(`${mention(owner)}, твой слот готов. Открой ссылку в личном чате с ботом.`, {
+    if (!owner) return reply(ctx, 'Оба слота уже закреплены.');
+    return reply(ctx, `${mention(owner)}, твой слот готов. Открой ссылку в личном чате с ботом.`, {
       parse_mode: 'HTML',
       reply_markup: new InlineKeyboard().url('Настроить агента', `https://t.me/${bot.botInfo.username}?start=setup`),
     });
@@ -288,15 +313,15 @@ async function onMessage(ctx, activeBot = bot) {
   const answersQuestion = job?.status === 'question' && msg.reply_to_message?.message_id === job.prompt_message;
   if (command === 'new' || (mentionInput !== undefined && !answersQuestion)) {
     try {
-      if (activeBot !== bot && !store.agent(ctx.from.id)?.name) return ctx.reply('Сначала подключи Codex через /setup в личке.');
+      if (activeBot !== bot && !store.agent(ctx.from.id)?.name) return reply(ctx, 'Сначала подключи Codex через /setup в личке.');
       return await newTask(ctx, mentionInput ?? input, activeBot);
     } catch (error) {
-      if (error instanceof HttpError) return ctx.reply(error.message);
+      if (error instanceof HttpError) return reply(ctx, error.message);
       throw error;
     }
   }
   if (!task) {
-    if (['ask', 'run'].includes(command)) return ctx.reply('Ответь этой командой на карточку задачи или напиши её внутри темы.');
+    if (['ask', 'run'].includes(command)) return reply(ctx, 'Ответь этой командой на карточку задачи или напиши её внутри темы.');
     return;
   }
   store.recordMessage(task.id, msg.message_id);
@@ -305,7 +330,7 @@ async function onMessage(ctx, activeBot = bot) {
     const other = store.agents().find((owner) => owner.user_id !== ctx.from.id && owner.name);
     if (other && store.agent(ctx.from.id)) {
       const sent = await request(task, other, 'review', input || 'Посмотри задачу и дай свой комментарий.');
-      if (!sent) await ctx.reply('У этого владельца уже есть открытый запрос по задаче.');
+      if (!sent) await reply(ctx, 'У этого владельца уже есть открытый запрос по задаче.');
       return;
     }
     return post(task, 'Чей агент нужен?' + (input ? '\n\n' + plain(input.slice(0, 1000)) : ''), {
@@ -315,7 +340,7 @@ async function onMessage(ctx, activeBot = bot) {
   if (!answersQuestion) return;
   const hasFile = Boolean(msg.document || msg.photo);
   if (hasFile && !archive) {
-    return ctx.reply('Файл не передан агенту: архив вложений не настроен. Агент ждёт текстовый ответ.');
+    return reply(ctx, 'Файл не передан агенту: архив вложений не настроен. Агент ждёт текстовый ответ.');
   }
   const answer = [mentionInput ?? text.trim(), hasFile && 'Владелец приложил файл или альбом. Открой вложения из истории Telegram.']
     .filter(Boolean).join('\n');
@@ -362,12 +387,10 @@ bot.on('callback_query:data', async (ctx) => {
   const accept = decision[1] === 'run';
   const changed = accept ? store.approve(job.id, ctx.from.id) : store.decline(job.id, ctx.from.id);
   if (!changed) return ctx.answerCallbackQuery('Запрос уже обработан.');
-  const task = store.task(job.task_id);
-  const owner = store.agent(job.owner);
-  if (accept) queueJob(job, task, owner);
+  if (accept) queueJob(job, store.task(job.task_id), store.agent(job.owner));
   await ctx.answerCallbackQuery(accept ? 'Агент поставлен в очередь.' : 'Запрос отклонён.');
   await ctx.editMessageReplyMarkup().catch(() => {});
-  if (!accept) await showStatus(job, task, owner, 'Запрос отклонён');
+  if (!accept) await clearStatus(job);
 });
 
 function toWire(name, bytes) {
@@ -403,20 +426,14 @@ async function execute(job) {
   queueNotices.delete(job.id);
   await notice;
   const started = Date.now();
-  let stage = 'Готовлю материалы';
   let progress;
-  const timer = setInterval(() => {
-    if (progress) return;
-    const minutes = Math.floor((Date.now() - started) / 60_000);
-    progress = status(`${stage} · ${minutes} мин прошло`).finally(() => { progress = undefined; });
-  }, 60_000);
-  async function finishStatus(state) {
+  let timer;
+  async function stopProgress() {
     clearInterval(timer);
     await progress;
-    await status(state);
   }
   try {
-    await status(stage + '…');
+    await status('Готовлю материалы…');
     const context = await telegram.prepare(store.group());
     const prompt = makePrompt(task, owner, job) + (context
       ? '\n\nАрхив группы: ' + join(archiveRoot, String(context.chat), 'history.jsonl')
@@ -424,9 +441,12 @@ async function execute(job) {
         + 'В поле file указан путь вложения относительно каталога архива. Недавние сообщения: ' + JSON.stringify(context.recent)
       : '');
     const peerFile = store.peerArtifact(task.id, owner.user_id);
-    stage = 'Работаю над задачей';
-    await progress;
-    await status(stage + '…');
+    await status('Работаю над задачей…');
+    timer = setInterval(() => {
+      if (progress) return;
+      const minutes = Math.floor((Date.now() - started) / 60_000);
+      progress = status(`Работаю над задачей · ${minutes} мин прошло`).finally(() => { progress = undefined; });
+    }, 60_000);
     const result = await runnerRequest(owner, '/run', {
       taskId: task.id,
       jobId: job.id,
@@ -435,36 +455,32 @@ async function execute(job) {
       attachment: toWire(task.attachment_name, task.attachment),
       handoff: peerFile && toWire(peerFile.name, peerFile.bytes),
     });
-    stage = 'Публикую результат';
+    await stopProgress();
     const artifact = result.artifact && { name: result.artifact.name, bytes: Buffer.from(result.artifact.bytes, 'base64') };
-    store.finish(job.id, result.threadId, result.message, artifact);
     const chars = Array.from(result.message);
     for (let index = 0; index < chars.length; index += 3200) {
       const content = chars.slice(index, index + 3200).join('');
       await post(task, `<b>${plain(label(owner))}</b>\n\n${plain(content)}`, {}, send);
     }
     if (artifact) {
-      const sent = await send((api) => api.sendDocument(store.group(), new InputFile(artifact.bytes, artifact.name), topicOrReply(task)));
+      const sent = await send((api) => api.sendDocument(store.group(), new InputFile(artifact.bytes, artifact.name), taskReply(task)));
       telegram.capture(store.group(), sent, undefined, async () => artifact.bytes);
       store.recordMessage(task.id, sent.message_id);
     }
-    let completed = 'Ход завершён';
-    if (result.action === 'ask_owner' && result.request.trim()
-        && await request(task, owner, job.kind, result.request, 'question')) {
-      completed = 'Ход завершён. Отправил вопрос владельцу.';
+    await clearStatus(job);
+    store.finish(job.id, result.threadId, result.message, artifact);
+    if (result.action === 'ask_owner' && result.request.trim()) {
+      await request(task, owner, job.kind, result.request, 'question');
     }
     if (result.action === 'request_peer' && result.request.trim()) {
       const peer = store.agents().find((agent) => agent.user_id !== owner.user_id && agent.name);
-      if (peer && await request(task, peer, job.kind === 'review' ? 'revision' : 'review', `${label(owner)} · ${result.request}`)) {
-        completed = 'Ход завершён. Запросил запуск второго агента.';
-      }
+      if (peer) await request(task, peer, job.kind === 'review' ? 'revision' : 'review', `${label(owner)} · ${result.request}`);
     }
-    await finishStatus(completed);
   } catch (error) {
-    store.fail(job.id);
-    await finishStatus('Ход прерван из-за ошибки');
+    await stopProgress();
     const message = error instanceof HttpError ? error.message : 'Не удалось завершить ход или опубликовать ответ.';
-    await post(task, `${mention(owner)}, ${plain(message)}\nОтветь /run на карточку или запрос, чтобы запустить ещё раз.`).catch(() => {});
+    await status(`${mention(owner)}, ${plain(message)}\nОтветь /run на карточку или запрос, чтобы запустить ещё раз.`);
+    store.fail(job.id);
     console.error('Ошибка хода', job.id, error.name, error.code || '');
   }
 }
@@ -499,8 +515,14 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 }
 await personal.restore();
 for (const job of interrupted) {
-  void showStatus(job, store.task(job.task_id), store.agent(job.owner), 'Ход прерван перезапуском бота. Ответь /run, чтобы запустить снова.');
+  await showStatus(job, store.task(job.task_id), store.agent(job.owner), 'Ход прерван перезапуском бота. Ответь /run, чтобы запустить снова.');
 }
+void (async () => {
+  for (const job of store.obsoleteStatuses()) {
+    if (stopping) break;
+    await clearStatus(job);
+  }
+})();
 pump();
 console.log('Telegram-бот готов.');
 bot.on('edited_message', (ctx) => telegram.capture(store.group(), ctx.editedMessage));
